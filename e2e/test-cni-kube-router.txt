@@ -1,0 +1,105 @@
+// as incluster configureation is required for daemonset/controllers, cluster should have TLS support
+0. add cidr of cluster
+// need to explicit specify cidr, otherwise, Failed to get pod CIDR from node spec.
+// kube-router relies on kube-controller-manager to allocate pod CIDR for the node or an annotation
+ `kube-router.io/pod-cidr`. Error: node.Spec.PodCIDR not set for node: arktos-dev
+// hack/lib/common.sh needs to add 2 more args to kube-controller-manager start script
+// function kube::common::start_controller_manager {
+// ...
+// --allocate-node-cidrs=true --cluster-cidr="192.168.0.0/16" \
+// ...
+
+1. start cluster w/ arktos-up.sh
+   export CONTAINER_RUNTIME_ENDPOINT="containerRuntime,container,/run/containerd/containerd.sock"
+   ./hack/arktos-up.sh
+   // notes: 1- FORWARD chain changed to DROP default policy
+   //        2- /proc/sys/net/bridge/bridge-nf-call-iptables is set 1
+   $ ./cluster/kubectl.sh get pods --all-namespaces --all-tenants -o wide
+TENANT   NAMESPACE     NAME                        HASHKEY               READY   STATUS    RESTARTS   AGE     IP           NODE         NOMINATED NODE   READINESS GATES
+system   kube-system   kube-dns-5d69f5657d-w2vqf   2786892306254421408   3/3     Running   0          3m25s   10.88.0.32   arktos-dev   <none>           <none>
+system   kube-system   virtlet-w8mdm               2723192371749179792   3/3     Running   0          2m51s   10.138.0.9   arktos-dev   <none>           <none>
+   // notes: virtlet ds should not be deployed in container only mode
+
+2. remove the cni, ideally
+   // notes: better keep it there as scheduler might? have some frozen issue?
+
+// avoid using tenant system - it seems very buggy
+// create 2 tenants, x + y
+// both has ns foo
+3. create 2 tenants, both have default + foo ns
+   // tenant x, ns foo
+   ./cluster/kubectl.sh create tenant x
+   ./cluster/kubectl.sh create ns --tenant x foo
+   // tenant y, ns foo
+
+4. create web pod in each tenants
+$ cat pod-foo-web.yaml 
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+  namespace: foo
+  labels:
+    app: web
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    ports:
+    - containerPort: 80
+
+   ./cluster/kubectl.sh apply --tenant x -f pod-foo-web.yaml
+   ./cluster/kubectl.sh apply --tenant y -f pod-foo-web.yaml
+
+   // they are in pending state if ni cni is there
+./cluster/kubectl.sh get pod --all-tenants  --all-namespaces --selector=app=web
+TENANT   NAMESPACE   NAME   HASHKEY               READY   STATUS    RESTARTS   AGE
+x        foo         web    2435516496810007468   0/1     Pending   0          12m
+y        foo         web    2762685363895450302   0/1     Pending   0          11m
+   // noticed some strange behaviors pod cannot be scheduled compaining the node not ready; seems scheduler misses the latest node state change?
+
+5. deploy kube-router, in both tenants
+   yaml file based on https://raw.githubusercontent.com/cloudnativelabs/kube-router/master/daemonset/kubeadm-kuberouter.yaml
+   kubectl apply --tenant x -f kubeadm-kuberouter.yaml.20245
+   kubectl apply --tenant y -f kubeadm-kuberouter.yaml.20246
+
+   // notes: node may turn into NotRedy state, kube-router pod stuck in Pending (which seems a bug: Unschedulable: 0/1 nodes are available: 1 node runtime is not ready.)
+   // notes: put back the original bridge cni work around this
+   // some flag of special toleration property of pod spec is the right solution???
+      to remove CriticalAddonsOnly, node.kubernetes.io/not-ready:NoSchedule ?
+   
+   // seems apply at system tenant appear to work; suspect the iptables rules would get messed up?
+   // todo: kubectl logs <pod> -c <init_container_name>
+
+4. verify network policies taking effect, in tenent default
+  ./kubectl run --generator=run-pod/v1 web --image=nginx -n foo --labels=app=web --expose --port 80
+  ./kubectl run --generator=run-pod/v1 test-$RANDOM -n=default --rm -it --image=alpine -- sh
+  
+  cat deny-all-ingress-in-ns-foo.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: foo
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+
+  cat allow-web-app-in-ns-foo.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  namespace: foo
+  name: web-allow-all-namespaces
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  ingress:
+  - from:
+    - namespaceSelector: {}
+
+
+5. create tenant xi & ns foo inside of x, and apply the kube-router yaml set there
+
