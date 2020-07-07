@@ -1,0 +1,10 @@
+apiVersion: "arktos.futurewei.com/v1"
+kind: Network
+metadata:
+  name: test2
+spec:
+  type: flat
+  service:
+    ipam: Kubernetes
+    cidrs: 
+    - "192.168.100.0/24"
