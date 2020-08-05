@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: kubernetes-xxx
+  namespace: default
+  tenant: x
+  labels:
+    arktos.futurewei.com/network: xxx
+subsets:
+- addresses:
+  - ip: 192.168.0.18
+  ports:
+  - name: https
+    port: 6443
+    protocol: TCP
