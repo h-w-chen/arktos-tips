@@ -4,6 +4,7 @@ metadata:
   labels:
     component: apiserver
     provider: kubernetes
+    arktos.futurewei.com/network: test1
   name: kubernetes-test1
   namespace: default
 spec:
